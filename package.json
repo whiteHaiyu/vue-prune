@@ -1,0 +1,43 @@
+{
+  "name": "vue-redundant-files",
+  "version": "0.1.0",
+  "description": "Scan Vue projects to find unused .vue files, static assets, and JS/TS files",
+  "bin": {
+    "vue-prune": "index.js",
+    "redundant-files": "index.js"
+  },
+  "type": "commonjs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "release": "bash scripts/publish.sh",
+    "release:patch": "bash scripts/publish.sh patch",
+    "release:minor": "bash scripts/publish.sh minor",
+    "release:major": "bash scripts/publish.sh major",
+    "release:beta": "bash scripts/publish.sh patch --tag beta"
+  },
+  "keywords": [
+    "vue",
+    "cli",
+    "unused",
+    "assets",
+    "analyzer",
+    "vite",
+    "webpack"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://example.com/your/repo.git"
+  },
+  "author": "",
+  "preferGlobal": true,
+  "publishConfig": {
+    "access": "public"
+  }
+}
