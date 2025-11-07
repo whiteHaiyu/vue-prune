@@ -109,9 +109,14 @@ class UnusedVueFinder {
 
     // 代码文件集合（不含 .vue）
     this.allCodeFiles = new Set();
+    // 任何地方被 import/require 到的代码文件（即使入口不可达，仍视为被引用）
+    this.referencedCodeFiles = new Set();
 
     // 从声明文件(.d.ts)识别到的全局组件（视为已用）
     this.usedVueFromDts = new Set();
+
+    // 空目录集合（相对路径）
+    this.emptyDirs = [];
   }
 
   // 导入匹配：尽量覆盖 import/export/require/动态 import/defineAsyncComponent 等
@@ -152,6 +157,49 @@ class UnusedVueFinder {
       console.error(`Error reading directory ${dir}:`, error.message);
       return fileList;
     }
+  }
+
+  // 递归获取所有目录（受 ignoreDirs 影响）
+  async getAllDirs(dir, dirList = []) {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const shouldIgnore = this.options.ignoreDirs.some((ignoreDir) =>
+            full.includes(ignoreDir)
+          );
+          if (shouldIgnore) continue;
+          dirList.push(full);
+          await this.getAllDirs(full, dirList);
+        }
+      }
+      return dirList;
+    } catch (_) {
+      return dirList;
+    }
+  }
+
+  // 计算空目录（不包含忽略目录；仅判断直接子项是否为空）
+  async collectEmptyDirs() {
+    const allDirs = await this.getAllDirs(this.rootDir);
+    const empties = [];
+    for (const abs of allDirs) {
+      try {
+        const names = fs.readdirSync(abs);
+        // 过滤掉忽略目录项
+        const filtered = names.filter((name) => {
+          const child = path.join(abs, name);
+          const ignored = this.options.ignoreDirs.some((ignoreDir) => child.includes(ignoreDir));
+          return !ignored;
+        });
+        if (filtered.length === 0) {
+          const rel = path.relative(this.rootDir, abs);
+          if (rel) empties.push(rel);
+        }
+      } catch (_) {}
+    }
+    this.emptyDirs = empties;
   }
 
   // 收集全量 .vue 文件（作为候选集）
@@ -252,6 +300,12 @@ class UnusedVueFinder {
                 console.log(`🔗 找到引用: ${targetRel} <- ${importerRel}`);
               }
             }
+          } else {
+            // 记录被引用的代码文件
+            const isCode = this.allCodeFiles.has(targetRel);
+            if (isCode) {
+              this.referencedCodeFiles.add(targetRel);
+            }
           }
         }
       }
@@ -303,7 +357,7 @@ class UnusedVueFinder {
       // 别名替换（带回退：replacement -> /src -> /）
       for (const alias in this.options.alias) {
         if (candidate === alias || candidate.startsWith(alias + '/')) {
-          const remainder = candidate.replace(alias, '');
+          const remainder = candidate.replace(alias, '').replace(/^\/+/, '');
           const primaryRep = this.options.alias[alias];
           const reps = [];
           const norm = (r) => (r || '').replace(/^\//, '');
@@ -553,7 +607,8 @@ class UnusedVueFinder {
     for (const alias in this.options.alias) {
       if (candidate === alias || candidate.startsWith(alias + '/')) {
         const replacement = this.options.alias[alias].replace(/^\//, '');
-        candidate = path.join(this.rootDir, replacement, candidate.replace(alias, ''));
+        const remainder = candidate.replace(alias, '').replace(/^\/+/, '');
+        candidate = path.join(this.rootDir, replacement, remainder);
         break;
       }
     }
@@ -914,6 +969,7 @@ class UnusedVueFinder {
     await this.collectVueFiles();
     await this.collectAssetFiles();
     await this.collectCodeFiles();
+    await this.collectEmptyDirs();
     await this.scanReferences();
 
     const reachableVue = await this.getReachableVueFiles();
@@ -939,6 +995,16 @@ class UnusedVueFinder {
     const unusedCodeFiles = [];
     for (const codeFile of this.allCodeFiles) {
       if (!reachableFiles.has(codeFile)) {
+        // 若代码文件与已使用的 .vue 组件成对（同目录同名或 index.{js,ts} + index.vue），视为包装文件，不报未使用
+        const codeDir = path.dirname(codeFile);
+        const base = path.basename(codeFile, path.extname(codeFile));
+        const sameBaseVue = path.join(codeDir, base + '.vue');
+        const indexVue = path.join(codeDir, 'index.vue');
+        const pairsWithUsedVue = (this.allVueFiles.has(sameBaseVue) && finalUsedVue.has(sameBaseVue)) ||
+          (base === 'index' && this.allVueFiles.has(indexVue) && finalUsedVue.has(indexVue));
+        if (pairsWithUsedVue) {
+          continue;
+        }
         unusedCodeFiles.push(codeFile);
       }
     }
@@ -983,7 +1049,16 @@ class UnusedVueFinder {
       console.log("\n🎉 恭喜！没有找到未使用的代码文件。");
     }
 
-    return { unusedVueFiles: unusedFiles, unusedAssets, unusedCodeFiles };
+    if (this.emptyDirs.length > 0) {
+      console.log("\n📝 空目录列表:");
+      this.emptyDirs.forEach((dir, index) => {
+        console.log(`${index + 1}. ${dir}`);
+      });
+    } else {
+      console.log("\n🎉 恭喜！没有找到空目录。");
+    }
+
+    return { unusedVueFiles: unusedFiles, unusedAssets, unusedCodeFiles, emptyDirs: this.emptyDirs };
   }
 }
 
@@ -1002,8 +1077,9 @@ async function confirmAndOptionallyDelete(rootDir, sections) {
     const hasVue = sections.vue && sections.vue.length > 0;
     const hasAssets = sections.assets && sections.assets.length > 0;
     const hasCode = sections.code && sections.code.length > 0;
+    const hasDirs = sections.dirs && sections.dirs.length > 0;
 
-    if (!hasVue && !hasAssets && !hasCode) return;
+    if (!hasVue && !hasAssets && !hasCode && !hasDirs) return;
 
     console.log("🛡️ 删除为不可逆操作，建议先提交一次代码备份。");
 
@@ -1018,6 +1094,10 @@ async function confirmAndOptionallyDelete(rootDir, sections) {
     if (hasCode) {
       const a = await ask(`是否删除未使用的代码文件 (${sections.code.length} 个)? [y/N] `);
       if (yn(a)) deleteFilesSafely(rootDir, sections.code);
+    }
+    if (hasDirs) {
+      const a = await ask(`是否删除空目录 (${sections.dirs.length} 个)? [y/N] `);
+      if (yn(a)) deleteDirsSafely(rootDir, sections.dirs);
     }
   } finally {
     rl.close();
@@ -1040,6 +1120,26 @@ function deleteFilesSafely(rootDir, relativeFiles) {
     }
   }
   console.log(`✅ 删除完成，共删除 ${deleted} 个文件`);
+}
+
+function deleteDirsSafely(rootDir, relativeDirs) {
+  let deleted = 0;
+  for (const rel of relativeDirs) {
+    const abs = path.join(rootDir, rel);
+    try {
+      if (!isSubPath(rootDir, abs)) continue;
+      if (!fs.existsSync(abs)) continue;
+      const entries = fs.readdirSync(abs);
+      if (entries.length === 0) {
+        fs.rmdirSync(abs);
+        deleted += 1;
+        console.log(`📁 已删除空目录: ${rel}`);
+      }
+    } catch (e) {
+      console.warn(`⚠️ 删除目录失败: ${rel} -> ${e.message}`);
+    }
+  }
+  console.log(`✅ 空目录删除完成，共删除 ${deleted} 个目录`);
 }
 
 // CLI 入口：必须显式传项目路径；不传则提示并退出
@@ -1067,7 +1167,7 @@ async function main() {
 
   const finder = new UnusedVueFinder(rootDirectory, options);
   try {
-    const { unusedVueFiles, unusedAssets, unusedCodeFiles } = await finder.findUnusedVueFiles();
+    const { unusedVueFiles, unusedAssets, unusedCodeFiles, emptyDirs } = await finder.findUnusedVueFiles();
     // 可选输出 .vue 清单
     if (unusedVueFiles.length > 0 && process.argv.includes("--output")) {
       const outputPath = path.join(rootDirectory, "unused-vue-files.txt");
@@ -1076,9 +1176,9 @@ async function main() {
     }
     // 交互式删除：仅当显式传入 --delete 且在 TTY 环境才启用
     if (process.argv.includes("--delete") &&
-      (unusedVueFiles.length > 0 || unusedAssets.length > 0 || unusedCodeFiles.length > 0) &&
+      (unusedVueFiles.length > 0 || unusedAssets.length > 0 || unusedCodeFiles.length > 0 || emptyDirs.length > 0) &&
       process.stdin.isTTY && process.stdout.isTTY) {
-      await confirmAndOptionallyDelete(rootDirectory, { vue: unusedVueFiles, assets: unusedAssets, code: unusedCodeFiles });
+      await confirmAndOptionallyDelete(rootDirectory, { vue: unusedVueFiles, assets: unusedAssets, code: unusedCodeFiles, dirs: emptyDirs });
     }
   } catch (error) {
     console.error("❌ 执行失败:", error.message);
@@ -1099,7 +1199,7 @@ if (process.argv.includes("-v") || process.argv.includes("--version")) {
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`
-    用法: node find-unused-vue.js [目录路径] [选项]
+    用法: vue-prune [目录路径] [选项]
 
     选项:
     --verbose     显示详细输出
@@ -1109,11 +1209,11 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
     --help, -h    显示帮助信息
 
     示例:
-    node find-unused-vue.js                          # 扫描当前目录
-    node find-unused-vue.js /path/to/project         # 扫描指定目录
-    node find-unused-vue.js --verbose               # 详细模式
-    node find-unused-vue.js --output                # 保存结果到文件
-    node find-unused-vue.js --delete                # 执行后询问是否删除
+    vue-prune .                         # 扫描当前目录
+    vue-prune /path/to/project         # 扫描指定目录
+    vue-prune --verbose               # 详细模式
+    vue-prune --output                # 保存结果到文件
+    vue-prune --delete                # 执行后询问是否删除
   `);
   process.exit(0);
 }

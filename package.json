@@ -1,6 +1,6 @@
 {
   "name": "vue-redundant-files",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Scan Vue projects to find unused .vue files, static assets, and JS/TS files",
   "bin": {
     "vue-prune": "index.js",
