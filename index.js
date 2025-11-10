@@ -88,7 +88,7 @@ class UnusedVueFinder {
         /(^|\/)plop\-templates\/.*$/,
         /(^|\/)plopfile\.js$/,
         // any *.config.* files (JS/TS/MJS/CJS)
-        /(^|\/).*\\.config\\\.(js|ts|mjs|cjs)$/,
+        /(^|\/).*\.config\.(js|ts|mjs|cjs)$/,
         // environment files (.env, .env.*)
         /(^|\/)\.env(\..*)?$/,
         // 包含 'mock' 的文件名（不区分大小写）
