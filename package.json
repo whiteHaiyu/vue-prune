@@ -33,7 +33,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://example.com/your/repo.git"
+    "url": "https://github.com/whiteHaiyu/vue-prune"
   },
   "author": "",
   "preferGlobal": true,
